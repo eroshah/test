@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="{{ current_lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ t.logs }} - {{ agent.name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{{ t.logs }}: {{ agent.name }}</h1>
+            <a href="/?DOMAIN={{ domain }}" class="btn btn-secondary">{{ t.back }}</a>
+        </div>
+
+        <div style="padding: 30px;">
+            {% if logs|length == 0 %}
+            <div class="empty-state">
+                <p>{{ t.no_logs if t.no_logs else 'No logs yet' }}</p>
+            </div>
+            {% else %}
+            <table class="logs-table">
+                <thead>
+                    <tr>
+                        <th>{{ t.timestamp }}</th>
+                        <th>{{ t.action }}</th>
+                        <th>{{ t.status }}</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr>
+                        <td>{{ log.created_at | timestamp_to_datetime }}</td>
+                        <td>{{ log.action_type }}</td>
+                        <td>
+                            {% if log.success %}
+                            <span class="log-success">✓ {{ t.success }}</span>
+                            {% else %}
+                            <span class="log-error">✗ {{ t.error }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if log.action_data %}
+                            <details>
+                                <summary>View data</summary>
+                                <pre style="font-size: 12px; overflow: auto;">{{ log.action_data | tojson(indent=2) }}</pre>
+                            </details>
+                            {% endif %}
+                            {% if log.error_message %}
+                            <div class="log-error">{{ log.error_message }}</div>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        // Автообновление каждые 10 секунд
+        setTimeout(() => location.reload(), 10000);
+    </script>
+</body>
+</html>

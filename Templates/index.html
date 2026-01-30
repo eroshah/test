@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="{{ current_lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ t.app_name }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>{{ t.app_name }}</h1>
+            <div class="language-selector">
+                <select onchange="window.location.href='/set-language/' + this.value + '?redirect=' + encodeURIComponent(window.location.pathname + window.location.search)">
+                    {% for lang_code in available_langs %}
+                    <option value="{{ lang_code }}" {% if lang_code == current_lang %}selected{% endif %}>
+                        {{ lang_code.upper() }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        <!-- Agents List -->
+        <div class="agents-section">
+            <div class="section-header">
+                <h2>{{ t.agents_list }}</h2>
+                {% if agents|length < max_agents %}
+                <a href="/agent/create?DOMAIN={{ domain }}" class="btn btn-primary">
+                    {{ t.create_agent }}
+                </a>
+                {% else %}
+                <button class="btn btn-disabled" disabled title="{{ t.max_agents_reached }}">
+                    {{ t.create_agent }}
+                </button>
+                {% endif %}
+            </div>
+
+            {% if agents|length == 0 %}
+            <div class="empty-state">
+                <p>{{ t.no_agents }}</p>
+            </div>
+            {% else %}
+            <div class="agents-grid">
+                {% for agent in agents %}
+                <div class="agent-card {% if not agent.is_active %}agent-inactive{% endif %}">
+                    <div class="agent-header">
+                        <h3>{{ agent.name }}</h3>
+                        <div class="agent-status">
+                            <span class="status-badge {% if agent.is_active %}status-active{% else %}status-inactive{% endif %}">
+                                {% if agent.is_active %}{{ t.active }}{% else %}{{ t.inactive }}{% endif %}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="agent-description">
+                        {{ agent.description or '-' }}
+                    </div>
+
+                    <div class="agent-info">
+                        <div class="info-item">
+                            <span class="info-label">{{ t.openai_model }}:</span>
+                            <span class="info-value">{{ agent.openai_model }}</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">{{ t.temperature }}:</span>
+                            <span class="info-value">{{ agent.temperature }}</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">{{ t.working_hours }}:</span>
+                            <span class="info-value">
+                                {% if agent.working_hours_enabled %}{{ t.working_hours_custom }}{% else %}{{ t.working_hours_247 }}{% endif %}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="agent-actions">
+                        <button onclick="toggleAgent({{ agent.id }})" class="btn btn-toggle">
+                            {% if agent.is_active %}{{ t.disabled }}{% else %}{{ t.enabled }}{% endif %}
+                        </button>
+                        <a href="/agent/edit/{{ agent.id }}?DOMAIN={{ domain }}" class="btn btn-secondary">
+                            {{ t.edit }}
+                        </a>
+                        <a href="/agent/logs/{{ agent.id }}?DOMAIN={{ domain }}" class="btn btn-secondary">
+                            {{ t.logs }}
+                        </a>
+                        <button onclick="deleteAgent({{ agent.id }})" class="btn btn-danger">
+                            {{ t.delete }}
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        const DOMAIN = "{{ domain }}";
+
+        function toggleAgent(agentId) {
+            if (!confirm('{{ t.yes }}?')) return;
+
+            fetch(`/api/agent/toggle/${agentId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({domain: DOMAIN})
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.error);
+                }
+            })
+            .catch(err => alert('Error: ' + err));
+        }
+
+        function deleteAgent(agentId) {
+            if (!confirm('{{ t.delete }}?')) return;
+
+            fetch(`/api/agent/delete/${agentId}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({domain: DOMAIN})
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    location.reload();
+                } else {
+                    alert(data.error);
+                }
+            })
+            .catch(err => alert('Error: ' + err));
+        }
+    </script>
+</body>
+</html>

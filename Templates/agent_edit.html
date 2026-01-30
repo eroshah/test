@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="{{ current_lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% if agent %}{{ t.edit_agent }}{% else %}{{ t.create_agent }}{% endif %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>{% if agent %}{{ t.edit_agent }}{% else %}{{ t.create_agent }}{% endif %}</h1>
+            <a href="/?DOMAIN={{ domain }}" class="btn btn-secondary">{{ t.back }}</a>
+        </div>
+
+        <form id="agent-form" class="agent-form" method="POST" action="javascript:void(0);">
+            <!-- Name -->
+            <div class="form-group">
+                <label for="name">{{ t.name }} *</label>
+                <input type="text" id="name" name="name" value="{{ agent.name if agent else '' }}" required>
+            </div>
+
+            <!-- Bot Type -->
+            <div class="form-group">
+                <label>Тип бота *</label>
+                <div class="radio-group">
+                    <label>
+                        <input type="radio" name="bot_type" value="openline"
+                               {% if agent and agent.bot_type == 'openline' %}checked{% endif %}
+                               {% if not agent %}checked{% endif %}
+                               onchange="toggleBotType()">
+                        Бот для Открытых Линий (Telegram, WhatsApp и т.д.)
+                    </label>
+                    <label>
+                        <input type="radio" name="bot_type" value="internal"
+                               {% if agent and agent.bot_type == 'internal' %}checked{% endif %}
+                               onchange="toggleBotType()">
+                        Внутренний чатбот (только внутри Битрикс24)
+                    </label>
+                </div>
+            </div>
+
+            <!-- Open Line Selection (only for openline bot type) -->
+            <div class="form-group" id="openline-select-group">
+                <label for="open_line_id">Выберите Открытую Линию *</label>
+                <select id="open_line_id" name="open_line_id">
+                    <option value="">— Загрузка списка... —</option>
+                </select>
+                <small style="color: #666;">Бот будет отвечать на сообщения из этой линии</small>
+            </div>
+
+            <!-- Description -->
+            <div class="form-group">
+                <label for="description">{{ t.description }}</label>
+                <textarea id="description" name="description" rows="3">{{ agent.description if agent else '' }}</textarea>
+            </div>
+
+            <!-- OpenAI API Key -->
+            <div class="form-group">
+                <label for="openai_api_key">{{ t.openai_api_key }} *</label>
+                <input type="password" id="openai_api_key" name="openai_api_key"
+                       value="{{ agent.openai_api_key if agent else '' }}" required>
+            </div>
+
+            <!-- OpenAI Model -->
+            <div class="form-group">
+                <label for="openai_model">{{ t.openai_model }} *</label>
+                <select id="openai_model" name="openai_model" required>
+                    {% for model in models %}
+                    <option value="{{ model }}" {% if agent and agent.openai_model == model %}selected{% endif %}>
+                        {{ model }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Temperature -->
+            <div class="form-group">
+                <label for="temperature">{{ t.temperature }}: <span id="temp-value">{{ agent.temperature if agent else 0.7 }}</span></label>
+                <input type="range" id="temperature" name="temperature" min="0" max="1" step="0.1"
+                       value="{{ agent.temperature if agent else 0.7 }}"
+                       oninput="document.getElementById('temp-value').textContent = this.value">
+            </div>
+
+            <!-- Audio Transcription -->
+            <div class="form-group checkbox-group">
+                <label>
+                    <input type="checkbox" id="audio_transcription" name="audio_transcription"
+                           {% if not agent or agent.audio_transcription %}checked{% endif %}>
+                    {{ t.audio_transcription }}
+                </label>
+            </div>
+
+            <!-- Max Retries -->
+            <div class="form-group">
+                <label for="max_retries">{{ t.max_retries }}</label>
+                <input type="number" id="max_retries" name="max_retries" min="1" max="10"
+                       value="{{ agent.max_retries if agent else 3 }}">
+            </div>
+
+            <!-- Inbound Only -->
+            <div class="form-group checkbox-group">
+                <label>
+                    <input type="checkbox" id="inbound_only" name="inbound_only"
+                           {% if agent and agent.inbound_only %}checked{% endif %}>
+                    {{ t.inbound_only }}
+                </label>
+            </div>
+
+            <!-- Message Buffer Time -->
+            <div class="form-group">
+                <label for="message_buffer_time">{{ t.message_buffer_time }}</label>
+                <input type="number" id="message_buffer_time" name="message_buffer_time" min="0" max="60"
+                       value="{{ agent.message_buffer_time if agent else 10 }}">
+            </div>
+
+            <!-- Timezone -->
+            <div class="form-group">
+                <label for="timezone">{{ t.timezone }}</label>
+                <select id="timezone" name="timezone">
+                    {% for tz in timezones %}
+                    <option value="{{ tz }}" {% if agent and agent.timezone == tz %}selected{% endif %}>
+                        {{ tz }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <!-- Working Hours -->
+            <div class="form-group">
+                <label>{{ t.working_hours }}</label>
+                <div class="radio-group">
+                    <label>
+                        <input type="radio" name="working_hours_mode" value="247"
+                               {% if not agent or not agent.working_hours_enabled %}checked{% endif %}
+                               onchange="toggleWorkingHours()">
+                        {{ t.working_hours_247 }}
+                    </label>
+                    <label>
+                        <input type="radio" name="working_hours_mode" value="custom"
+                               {% if agent and agent.working_hours_enabled %}checked{% endif %}
+                               onchange="toggleWorkingHours()">
+                        {{ t.working_hours_custom }}
+                    </label>
+                </div>
+            </div>
+
+            <!-- Custom Working Hours Schedule -->
+            <div id="working-hours-schedule" style="{% if not agent or not agent.working_hours_enabled %}display:none{% endif %}">
+                <div class="schedule-grid">
+                    {% for day_en, day_key in [('monday', 'monday'), ('tuesday', 'tuesday'), ('wednesday', 'wednesday'),
+                                                 ('thursday', 'thursday'), ('friday', 'friday'), ('saturday', 'saturday'),
+                                                 ('sunday', 'sunday')] %}
+                    <div class="schedule-day">
+                        <label>
+                            <input type="checkbox" name="day_{{ day_en }}"
+                                   {% if agent and agent.working_hours_schedule and agent.working_hours_schedule.get(day_en) %}checked{% endif %}>
+                            {{ t[day_key] }}
+                        </label>
+                        <input type="time" name="from_{{ day_en }}"
+                               value="{{ agent.working_hours_schedule.get(day_en, {}).get('from', '09:00') if agent else '09:00' }}">
+                        <span>-</span>
+                        <input type="time" name="to_{{ day_en }}"
+                               value="{{ agent.working_hours_schedule.get(day_en, {}).get('to', '18:00') if agent else '18:00' }}">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Tools -->
+            <div class="form-group">
+                <label>{{ t.tools }}</label>
+                <div class="tools-grid">
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_crm_lead_add"
+                               {% if agent and 'crm_lead_add' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">crm_lead_add</div>
+                            <div class="tool-desc">Создание лида</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_crm_deal_add"
+                               {% if agent and 'crm_deal_add' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">crm_deal_add</div>
+                            <div class="tool-desc">Создание сделки</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_crm_contact_add"
+                               {% if agent and 'crm_contact_add' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">crm_contact_add</div>
+                            <div class="tool-desc">Создание контакта</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_crm_lead_get"
+                               {% if agent and 'crm_lead_get' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">crm_lead_get</div>
+                            <div class="tool-desc">Получить лид</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_crm_deal_get"
+                               {% if agent and 'crm_deal_get' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">crm_deal_get</div>
+                            <div class="tool-desc">Получить сделку</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_transfer_chat_to_user"
+                               {% if agent and 'transfer_chat_to_user' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">transfer_chat_to_user</div>
+                            <div class="tool-desc">Передать оператору</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_disconnect_agent_from_chat"
+                               {% if agent and 'disconnect_agent_from_chat' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">disconnect_agent_from_chat</div>
+                            <div class="tool-desc">Отключиться от чата</div>
+                        </div>
+                    </label>
+
+                    <label class="tool-item">
+                        <input type="checkbox" name="tool_get_todays_date"
+                               {% if agent and 'get_todays_date' in agent.enabled_tools %}checked{% endif %}>
+                        <div class="tool-info">
+                            <div class="tool-name">get_todays_date</div>
+                            <div class="tool-desc">Текущая дата/время</div>
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">{{ t.save }}</button>
+                <a href="/?DOMAIN={{ domain }}" class="btn btn-secondary">{{ t.cancel }}</a>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const DOMAIN = "{{ domain }}";
+        const AGENT_ID = {{ agent.id if agent else 'null' }};
+
+        console.log('Agent Edit Loaded:', {DOMAIN, AGENT_ID});
+
+        function toggleWorkingHours() {
+            const mode = document.querySelector('input[name="working_hours_mode"]:checked').value;
+            document.getElementById('working-hours-schedule').style.display = mode === 'custom' ? 'block' : 'none';
+        }
+
+        function toggleBotType() {
+            const botType = document.querySelector('input[name="bot_type"]:checked').value;
+            const openlineGroup = document.getElementById('openline-select-group');
+            if (botType === 'openline') {
+                openlineGroup.style.display = 'block';
+            } else {
+                openlineGroup.style.display = 'none';
+            }
+        }
+
+        // Инициализация при загрузке
+        document.addEventListener('DOMContentLoaded', toggleBotType);
+
+        document.getElementById('agent-form').addEventListener('submit', function(e) {
+            console.log('=== Form Submit ===');
+            e.preventDefault();
+            e.stopPropagation();
+
+            const formData = new FormData(this);
+
+            const botType = formData.get('bot_type');
+            const data = {
+                domain: DOMAIN,
+                name: formData.get('name'),
+                description: formData.get('description') || '',
+                bot_type: botType,  // 'openline' или 'internal'
+                openai_api_key: formData.get('openai_api_key'),
+                openai_model: formData.get('openai_model'),
+                temperature: parseFloat(formData.get('temperature')),
+                audio_transcription: formData.get('audio_transcription') ? 1 : 0,
+                max_retries: parseInt(formData.get('max_retries')),
+                inbound_only: formData.get('inbound_only') ? 1 : 0,
+                message_buffer_time: parseInt(formData.get('message_buffer_time')),
+                timezone: formData.get('timezone'),
+                working_hours_enabled: formData.get('working_hours_mode') === 'custom' ? 1 : 0,
+                working_hours_schedule: {},
+                open_line_id: botType === 'openline' ? (formData.get('open_line_id') || null) : null,
+                enabled_tools: [],
+                is_active: 1
+            };
+
+            // Валидация для бота открытых линий
+            if (botType === 'openline' && !data.open_line_id) {
+                alert('Выберите Открытую Линию для бота!');
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
+                return;
+            }
+
+            // Working hours
+            if (data.working_hours_enabled) {
+                const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+                days.forEach(day => {
+                    if (formData.get(`day_${day}`)) {
+                        data.working_hours_schedule[day] = {
+                            from: formData.get(`from_${day}`),
+                            to: formData.get(`to_${day}`)
+                        };
+                    }
+                });
+            }
+
+            // Tools
+            document.querySelectorAll('input[name^="tool_"]').forEach(checkbox => {
+                if (checkbox.checked) {
+                    data.enabled_tools.push(checkbox.name.replace('tool_', ''));
+                }
+            });
+
+            console.log('Data:', data);
+
+            const url = AGENT_ID ? `/api/agent/update/${AGENT_ID}` : '/api/agent/create';
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const originalText = submitBtn.textContent;
+
+            submitBtn.textContent = 'Saving...';
+            submitBtn.disabled = true;
+
+            fetch(url, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            })
+            .then(res => res.json())
+            .then(data => {
+                console.log('Response:', data);
+                if (data.success) {
+                    window.location.href = `/?DOMAIN=${DOMAIN}`;
+                } else {
+                    alert(data.error || 'Error');
+                    submitBtn.textContent = originalText;
+                    submitBtn.disabled = false;
+                }
+            })
+            .catch(err => {
+                console.error('Error:', err);
+                alert('Error: ' + err.message);
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
+            });
+        });
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Загружаем список открытых линий
+    fetch(`/api/openlines/available?DOMAIN=${DOMAIN}`)
+        .then(r => r.json())
+        .then(lines => {
+            const select = document.getElementById('open_line_id');
+            if (!select) return;
+
+            // Очищаем и добавляем placeholder
+            select.innerHTML = '<option value="">— Выберите Открытую Линию —</option>';
+
+            if (lines.length === 0) {
+                select.innerHTML = '<option value="">— Нет доступных линий —</option>';
+                return;
+            }
+
+            lines.forEach(line => {
+                const opt = document.createElement('option');
+                opt.value = line.ID;
+                opt.textContent = line.LINE_NAME || `Линия #${line.ID}`;
+                select.appendChild(opt);
+            });
+
+            // Если редактируем агента - выбираем его линию
+            {% if agent and agent.open_line_id %}
+            select.value = "{{ agent.open_line_id }}";
+            {% endif %}
+        })
+        .catch(err => {
+            console.error('Error loading openlines:', err);
+            const select = document.getElementById('open_line_id');
+            if (select) {
+                select.innerHTML = '<option value="">— Ошибка загрузки —</option>';
+            }
+        });
+
+    // Инициализируем видимость секции
+    toggleBotType();
+});
+
+
+    </script>
+</body>
+</html>

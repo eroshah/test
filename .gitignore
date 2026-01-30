@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local DB
+ai_agents.db
+
+# Secrets / local configs
+.env
+.claude/

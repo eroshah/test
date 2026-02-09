@@ -20,39 +20,41 @@
                 <input type="text" id="name" name="name" value="{{ agent.name if agent else '' }}" required>
             </div>
 
-            <!-- Bot Type -->
+            <!-- Bot Info -->
+            {% if not agent %}
             <div class="form-group">
-                <label>Тип бота *</label>
-                <div class="radio-group">
-                    <label>
-                        <input type="radio" name="bot_type" value="openline"
-                               {% if agent and agent.bot_type == 'openline' %}checked{% endif %}
-                               {% if not agent %}checked{% endif %}
-                               onchange="toggleBotType()">
-                        Бот для Открытых Линий (Telegram, WhatsApp и т.д.)
-                    </label>
-                    <label>
-                        <input type="radio" name="bot_type" value="internal"
-                               {% if agent and agent.bot_type == 'internal' %}checked{% endif %}
-                               onchange="toggleBotType()">
-                        Внутренний чатбот (только внутри Битрикс24)
-                    </label>
+                <div style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; border: 1px solid var(--border-color);">
+                    <p style="margin: 0; color: var(--text-secondary); font-size: 14px;">
+                        <strong>Чат-бот для Открытых линий</strong><br>
+                        При создании агента автоматически создаётся бот в Bitrix24.<br>
+                        После создания подключите бота к нужной Открытой линии в настройках Bitrix24.
+                    </p>
                 </div>
             </div>
+            {% endif %}
 
-            <!-- Open Line Selection (only for openline bot type) -->
-            <div class="form-group" id="openline-select-group">
-                <label for="open_line_id">Выберите Открытую Линию *</label>
-                <select id="open_line_id" name="open_line_id">
-                    <option value="">— Загрузка списка... —</option>
-                </select>
-                <small style="color: #666;">Бот будет отвечать на сообщения из этой линии</small>
+            {% if agent and agent.bot_id %}
+            <div class="form-group">
+                <div style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; border: 1px solid var(--success);">
+                    <p style="margin: 0; color: var(--text-primary); font-size: 14px;">
+                        <strong>BOT_ID: {{ agent.bot_id }}</strong><br>
+                        <span style="color: var(--text-secondary);">Бот создан в Bitrix24. Подключите его к Открытой линии в настройках контакт-центра.</span>
+                    </p>
+                </div>
             </div>
+            {% endif %}
 
             <!-- Description -->
             <div class="form-group">
                 <label for="description">{{ t.description }}</label>
-                <textarea id="description" name="description" rows="3">{{ agent.description if agent else '' }}</textarea>
+                <textarea id="description" name="description" rows="2">{{ agent.description if agent else '' }}</textarea>
+            </div>
+
+            <!-- System Prompt -->
+            <div class="form-group">
+                <label for="system_prompt">Системный промпт</label>
+                <textarea id="system_prompt" name="system_prompt" rows="5" placeholder="Вы - AI ассистент компании...">{{ agent.system_prompt if agent else '' }}</textarea>
+                <small style="color: var(--text-secondary);">Инструкции для AI. Опишите роль бота, как он должен отвечать, какую информацию использовать.</small>
             </div>
 
             <!-- OpenAI API Key -->
@@ -82,36 +84,11 @@
                        oninput="document.getElementById('temp-value').textContent = this.value">
             </div>
 
-            <!-- Audio Transcription -->
-            <div class="form-group checkbox-group">
-                <label>
-                    <input type="checkbox" id="audio_transcription" name="audio_transcription"
-                           {% if not agent or agent.audio_transcription %}checked{% endif %}>
-                    {{ t.audio_transcription }}
-                </label>
-            </div>
-
             <!-- Max Retries -->
             <div class="form-group">
                 <label for="max_retries">{{ t.max_retries }}</label>
                 <input type="number" id="max_retries" name="max_retries" min="1" max="10"
                        value="{{ agent.max_retries if agent else 3 }}">
-            </div>
-
-            <!-- Inbound Only -->
-            <div class="form-group checkbox-group">
-                <label>
-                    <input type="checkbox" id="inbound_only" name="inbound_only"
-                           {% if agent and agent.inbound_only %}checked{% endif %}>
-                    {{ t.inbound_only }}
-                </label>
-            </div>
-
-            <!-- Message Buffer Time -->
-            <div class="form-group">
-                <label for="message_buffer_time">{{ t.message_buffer_time }}</label>
-                <input type="number" id="message_buffer_time" name="message_buffer_time" min="0" max="60"
-                       value="{{ agent.message_buffer_time if agent else 10 }}">
             </div>
 
             <!-- Timezone -->
@@ -251,6 +228,40 @@
                 <a href="/?DOMAIN={{ domain }}" class="btn btn-secondary">{{ t.cancel }}</a>
             </div>
         </form>
+
+        <!-- Test Chat Section (only for existing agents) -->
+        {% if agent %}
+        <div class="test-chat-section">
+            <div class="section-title">
+                <h2>🧪 Тестовый чат</h2>
+                <p class="section-desc">Проверьте работу агента напрямую, без необходимости писать в Bitrix24</p>
+            </div>
+
+            <div class="chat-container">
+                <div class="chat-messages" id="chat-messages">
+                    <div class="chat-welcome">
+                        <div class="welcome-icon">💬</div>
+                        <p>Напишите сообщение, чтобы протестировать агента</p>
+                    </div>
+                </div>
+
+                <div class="chat-input-container">
+                    <textarea
+                        id="chat-input"
+                        class="chat-input"
+                        placeholder="Введите сообщение..."
+                        rows="1"
+                    ></textarea>
+                    <button type="button" id="chat-send-btn" class="chat-send-btn" onclick="sendTestMessage()">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 
     <script>
@@ -264,19 +275,6 @@
             document.getElementById('working-hours-schedule').style.display = mode === 'custom' ? 'block' : 'none';
         }
 
-        function toggleBotType() {
-            const botType = document.querySelector('input[name="bot_type"]:checked').value;
-            const openlineGroup = document.getElementById('openline-select-group');
-            if (botType === 'openline') {
-                openlineGroup.style.display = 'block';
-            } else {
-                openlineGroup.style.display = 'none';
-            }
-        }
-
-        // Инициализация при загрузке
-        document.addEventListener('DOMContentLoaded', toggleBotType);
-
         document.getElementById('agent-form').addEventListener('submit', function(e) {
             console.log('=== Form Submit ===');
             e.preventDefault();
@@ -284,34 +282,21 @@
 
             const formData = new FormData(this);
 
-            const botType = formData.get('bot_type');
             const data = {
                 domain: DOMAIN,
                 name: formData.get('name'),
                 description: formData.get('description') || '',
-                bot_type: botType,  // 'openline' или 'internal'
+                system_prompt: formData.get('system_prompt') || '',
                 openai_api_key: formData.get('openai_api_key'),
                 openai_model: formData.get('openai_model'),
                 temperature: parseFloat(formData.get('temperature')),
-                audio_transcription: formData.get('audio_transcription') ? 1 : 0,
                 max_retries: parseInt(formData.get('max_retries')),
-                inbound_only: formData.get('inbound_only') ? 1 : 0,
-                message_buffer_time: parseInt(formData.get('message_buffer_time')),
                 timezone: formData.get('timezone'),
                 working_hours_enabled: formData.get('working_hours_mode') === 'custom' ? 1 : 0,
                 working_hours_schedule: {},
-                open_line_id: botType === 'openline' ? (formData.get('open_line_id') || null) : null,
                 enabled_tools: [],
                 is_active: 1
             };
-
-            // Валидация для бота открытых линий
-            if (botType === 'openline' && !data.open_line_id) {
-                alert('Выберите Открытую Линию для бота!');
-                submitBtn.textContent = originalText;
-                submitBtn.disabled = false;
-                return;
-            }
 
             // Working hours
             if (data.working_hours_enabled) {
@@ -367,45 +352,172 @@
         });
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Загружаем список открытых линий
-    fetch(`/api/openlines/available?DOMAIN=${DOMAIN}`)
-        .then(r => r.json())
-        .then(lines => {
-            const select = document.getElementById('open_line_id');
-            if (!select) return;
-
-            // Очищаем и добавляем placeholder
-            select.innerHTML = '<option value="">— Выберите Открытую Линию —</option>';
-
-            if (lines.length === 0) {
-                select.innerHTML = '<option value="">— Нет доступных линий —</option>';
-                return;
-            }
-
-            lines.forEach(line => {
-                const opt = document.createElement('option');
-                opt.value = line.ID;
-                opt.textContent = line.LINE_NAME || `Линия #${line.ID}`;
-                select.appendChild(opt);
-            });
-
-            // Если редактируем агента - выбираем его линию
-            {% if agent and agent.open_line_id %}
-            select.value = "{{ agent.open_line_id }}";
-            {% endif %}
-        })
-        .catch(err => {
-            console.error('Error loading openlines:', err);
-            const select = document.getElementById('open_line_id');
-            if (select) {
-                select.innerHTML = '<option value="">— Ошибка загрузки —</option>';
-            }
-        });
-
-    // Инициализируем видимость секции
-    toggleBotType();
+    console.log('Agent form loaded');
 });
 
+// ========== TEST CHAT FUNCTIONS ==========
+
+let chatHistory = [];
+let isWaitingResponse = false;
+
+function sendTestMessage() {
+    if (isWaitingResponse) return;
+
+    const input = document.getElementById('chat-input');
+    const message = input.value.trim();
+
+    if (!message) return;
+    if (!AGENT_ID) {
+        alert('Сначала сохраните агента!');
+        return;
+    }
+
+    // Добавляем сообщение пользователя в чат
+    addMessageToChat('user', message);
+    input.value = '';
+    autoResizeTextarea(input);
+
+    // Показываем индикатор загрузки
+    showTypingIndicator();
+    isWaitingResponse = true;
+
+    // Отправляем запрос
+    fetch(`/api/agent/${AGENT_ID}/chat`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            domain: DOMAIN,
+            message: message
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        hideTypingIndicator();
+        isWaitingResponse = false;
+
+        if (data.error) {
+            addMessageToChat('error', `Ошибка: ${data.error}`);
+        } else {
+            addMessageToChat('bot', data.response, data.tool_calls, data.usage);
+        }
+    })
+    .catch(err => {
+        hideTypingIndicator();
+        isWaitingResponse = false;
+        addMessageToChat('error', `Ошибка сети: ${err.message}`);
+    });
+}
+
+function addMessageToChat(role, content, toolCalls = [], usage = null) {
+    const container = document.getElementById('chat-messages');
+
+    // Удаляем приветственное сообщение
+    const welcome = container.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `chat-message chat-message-${role}`;
+
+    let html = '';
+
+    if (role === 'user') {
+        html = `
+            <div class="message-avatar">👤</div>
+            <div class="message-content">
+                <div class="message-text">${escapeHtml(content)}</div>
+            </div>
+        `;
+    } else if (role === 'bot') {
+        html = `
+            <div class="message-avatar">🤖</div>
+            <div class="message-content">
+                <div class="message-text">${formatBotMessage(content)}</div>
+                ${toolCalls && toolCalls.length > 0 ? `
+                    <div class="message-tools">
+                        <span class="tools-label">🔧 Функции:</span>
+                        ${toolCalls.map(tc => `<span class="tool-badge">${tc.function}</span>`).join('')}
+                    </div>
+                ` : ''}
+                ${usage ? `
+                    <div class="message-usage">
+                        Токены: ${usage.prompt_tokens || 0} → ${usage.completion_tokens || 0} (всего: ${usage.total_tokens || 0})
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    } else if (role === 'error') {
+        html = `
+            <div class="message-avatar">⚠️</div>
+            <div class="message-content">
+                <div class="message-text message-error">${escapeHtml(content)}</div>
+            </div>
+        `;
+    }
+
+    msgDiv.innerHTML = html;
+    container.appendChild(msgDiv);
+
+    // Скроллим вниз
+    container.scrollTop = container.scrollHeight;
+}
+
+function showTypingIndicator() {
+    const container = document.getElementById('chat-messages');
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'chat-message chat-message-bot typing-indicator';
+    typingDiv.id = 'typing-indicator';
+    typingDiv.innerHTML = `
+        <div class="message-avatar">🤖</div>
+        <div class="message-content">
+            <div class="typing-dots">
+                <span></span><span></span><span></span>
+            </div>
+        </div>
+    `;
+    container.appendChild(typingDiv);
+    container.scrollTop = container.scrollHeight;
+}
+
+function hideTypingIndicator() {
+    const indicator = document.getElementById('typing-indicator');
+    if (indicator) indicator.remove();
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function formatBotMessage(text) {
+    if (!text) return '<em>(пустой ответ)</em>';
+    // Простое форматирование: переносы строк -> <br>
+    return escapeHtml(text).replace(/\n/g, '<br>');
+}
+
+function autoResizeTextarea(textarea) {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
+}
+
+// Event listeners для чата
+document.addEventListener('DOMContentLoaded', function() {
+    const chatInput = document.getElementById('chat-input');
+    if (chatInput) {
+        // Авто-ресайз textarea
+        chatInput.addEventListener('input', function() {
+            autoResizeTextarea(this);
+        });
+
+        // Отправка по Enter (Shift+Enter для новой строки)
+        chatInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendTestMessage();
+            }
+        });
+    }
+});
 
     </script>
 </body>

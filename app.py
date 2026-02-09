@@ -164,113 +164,83 @@ def agent_logs_page(agent_id):
 @app.route('/api/agent/create', methods=['POST'])
 def api_create_agent():
     """
-    API: Создать агента
+    API: Создать агента с ботом для Открытых линий
 
-    Поддерживает два типа ботов:
-    - bot_type='openline': Бот для Открытых Линий (TYPE='O') - для Telegram, WhatsApp и т.д.
-    - bot_type='internal': Внутренний чатбот (TYPE='B') - только внутри Битрикс24
+    Автоматически создаёт бота в Bitrix24 через webhook.
+    Бот будет доступен для подключения к любой Открытой линии.
     """
     data = request.json
-    domain = data.get('domain')
-    bot_type = data.get('bot_type', 'openline')  # По умолчанию для открытых линий
-
-    if not domain:
-        return jsonify({'error': 'Domain required'}), 400
+    domain = Config.BITRIX_DOMAIN  # Берём домен из конфига
 
     # Проверка лимита
     agents = db.get_agents(domain)
     if len(agents) >= Config.MAX_AGENTS:
         return jsonify({'error': 'Maximum agents reached'}), 400
 
-    # Для бота открытых линий нужна выбранная линия
-    open_line_id = data.get('open_line_id')
-    if bot_type == 'openline' and not open_line_id:
-        return jsonify({'error': 'Для бота Открытых Линий необходимо выбрать линию'}), 400
-
     try:
         # Создаём агента в БД (пока без bot_id)
         agent_id = db.create_agent(domain, data)
 
-        # Регистрируем бота в Bitrix24
+        # Регистрируем бота в Bitrix24 (OAuth или webhook fallback)
         from bitrix_client import BitrixClient
-        bitrix = BitrixClient(domain, db)
+        try:
+            bitrix = BitrixClient(domain=domain, db=db)
+        except Exception:
+            print("[CREATE] OAuth не доступен, используем webhook fallback")
+            bitrix = BitrixClient()
 
-        # URL webhook должен быть доступен из интернета!
-        if Config.PUBLIC_URL:
-            base_url = Config.PUBLIC_URL.rstrip('/')
-        else:
-            base_url = request.url_root.rstrip('/')
-            print(f"⚠️ PUBLIC_URL не указан в config.py! Используем: {base_url}")
-
-        handler_url = f"{base_url}/webhook/bot"
+        # URL обработчика событий (Cloudflare туннель)
+        handler_url = f"{Config.PUBLIC_URL.rstrip('/')}/webhook/bot"
 
         # Уникальный код бота
         bot_code = f"ai_agent_{agent_id}_{int(time.time())}"
 
-        is_openline = (bot_type == 'openline')
-        print(f"📝 Создание бота: code={bot_code}, type={'OpenLine' if is_openline else 'Internal'}")
-        print(f"📌 Handler URL: {handler_url}")
+        print(f"[CREATE] Создание бота для Открытых линий")
+        print(f"[CREATE] Bot code: {bot_code}")
+        print(f"[CREATE] Handler URL: {handler_url}")
 
         try:
-            # Регистрируем бота
+            # Регистрируем бота типа "O" (OpenLine)
             bot_id = bitrix.register_chatbot(
                 bot_code=bot_code,
                 bot_name=data.get('name', 'AI Assistant'),
                 handler_url=handler_url,
-                bot_description=data.get('description'),
-                openline=is_openline  # True для OpenLine, False для внутреннего
+                bot_description=data.get('description')
             )
 
-            print(f"✅ Бот зарегистрирован: BOT_ID={bot_id}")
-
-            # Если это бот для открытых линий - привязываем к линии
-            if is_openline and open_line_id:
-                try:
-                    bitrix.openlines_attach_bot(open_line_id, bot_id)
-                    print(f"✅ Бот привязан к Открытой Линии: {open_line_id}")
-                except Exception as e:
-                    print(f"⚠️ Ошибка привязки к линии: {e}")
-                    # Удаляем бота если не удалось привязать
-                    try:
-                        bitrix.unregister_chatbot(bot_id)
-                    except:
-                        pass
-                    db.delete_agent(agent_id)
-                    return jsonify({'error': f'Ошибка привязки к Открытой Линии: {str(e)}'}), 500
+            print(f"[CREATE] Бот создан! BOT_ID={bot_id}")
 
             # Сохраняем bot_id и все данные
             db.update_agent(agent_id, {
                 'bot_id': bot_id,
-                'bot_type': bot_type,
+                'bot_type': 'openline',
                 'name': data.get('name'),
                 'description': data.get('description'),
                 'system_prompt': data.get('system_prompt'),
-                'rag_files': data.get('rag_files', []),
                 'openai_api_key': data.get('openai_api_key'),
                 'openai_model': data.get('openai_model', 'gpt-4o'),
                 'temperature': data.get('temperature', 0.7),
-                'audio_transcription': data.get('audio_transcription', 1),
                 'max_retries': data.get('max_retries', 3),
-                'inbound_only': data.get('inbound_only', 0),
-                'message_buffer_time': data.get('message_buffer_time', 10),
                 'timezone': data.get('timezone', 'UTC'),
-                'working_hours_enabled': data.get('working_hours_enabled', 0),
-                'working_hours_schedule': data.get('working_hours_schedule', {}),
                 'enabled_tools': data.get('enabled_tools', []),
-                'is_active': data.get('is_active', 1),
-                'open_line_id': open_line_id if is_openline else None
+                'is_active': data.get('is_active', 1)
             })
 
-            print(f"✅ Агент создан успешно!")
+            print(f"[CREATE] Агент создан успешно!")
+
+            return jsonify({
+                'success': True,
+                'agent_id': agent_id,
+                'bot_id': bot_id,
+                'message': f'Бот создан! Теперь подключите его к Открытой линии в настройках Bitrix24.'
+            })
 
         except Exception as e:
-            print(f"⚠️ Не удалось зарегистрировать бота: {e}")
+            print(f"[CREATE] Ошибка создания бота: {e}")
             import traceback
             traceback.print_exc()
             db.delete_agent(agent_id)
             return jsonify({'error': f'Ошибка регистрации бота: {str(e)}'}), 500
-
-        return jsonify({'success': True, 'agent_id': agent_id, 'bot_id': bot_id})
 
     except Exception as e:
         import traceback
@@ -300,28 +270,27 @@ def api_update_agent(agent_id):
 
 @app.route('/api/agent/delete/<int:agent_id>', methods=['POST'])
 def api_delete_agent(agent_id):
-    """API: Удалить агента"""
-    data = request.json
-    domain = data.get('domain')
-
-    if not domain:
-        return jsonify({'error': 'Domain required'}), 400
+    """API: Удалить агента и бота в Bitrix24"""
+    domain = Config.BITRIX_DOMAIN
 
     agent = db.get_agent(agent_id)
-    if not agent or agent['domain'] != domain:
+    if not agent:
         return jsonify({'error': 'Agent not found'}), 404
 
     try:
         from bitrix_client import BitrixClient
-        bitrix = BitrixClient(domain, db)
+        try:
+            bitrix = BitrixClient(domain=domain, db=db)
+        except Exception:
+            bitrix = BitrixClient()
 
         # Удаляем бота из Bitrix24
         if agent.get('bot_id'):
             try:
                 bitrix.unregister_chatbot(agent['bot_id'])
-                print(f"✅ Бот удалён: BOT_ID={agent['bot_id']}")
+                print(f"[DELETE] Бот удалён: BOT_ID={agent['bot_id']}")
             except Exception as e:
-                print(f"⚠️ Не удалось удалить бота: {e}")
+                print(f"[DELETE] Не удалось удалить бота: {e}")
 
         # Удаляем агента из БД
         db.delete_agent(agent_id)
@@ -593,6 +562,25 @@ def install():
     auth_expires = body_data.get('AUTH_EXPIRES', 3600)
     member_id = body_data.get('member_id')
 
+    # Если нет токенов — показываем страницу с JS SDK который вытянет токены из Bitrix24
+    if not auth_id:
+        print("[INSTALL] No AUTH_ID, showing JS install page")
+        return f'''
+        <html>
+        <head><script src="//api.bitrix24.com/api/v1/"></script></head>
+        <body>
+            <script>
+                BX24.init(function() {{
+                    BX24.installFinish();
+                    console.log("installFinish called from init!");
+                    window.location.href = '/?DOMAIN={domain}';
+                }});
+            </script>
+            <p>Инициализация приложения...</p>
+        </body>
+        </html>
+        '''
+
     if auth_id and refresh_id:
         try:
             db.save_app(
@@ -602,9 +590,26 @@ def install():
                 int(time.time()) + int(auth_expires),
                 member_id
             )
-            print("✅ Токены сохранены")
+            print("[INSTALL] Токены сохранены")
 
-            # Если открыли приложение - редирект на главную
+            # Обновляем handler URL всех ботов (важно при смене Cloudflare tunnel URL)
+            if Config.PUBLIC_URL:
+                try:
+                    from bitrix_client import BitrixClient
+                    bitrix = BitrixClient(domain=domain, db=db)
+                    handler_url = f"{Config.PUBLIC_URL.rstrip('/')}/webhook/bot"
+                    agents = db.get_agents(domain)
+                    for agent in agents:
+                        if agent.get('bot_id'):
+                            try:
+                                bitrix.update_bot(agent['bot_id'], handler_url)
+                                print(f"[INSTALL] Bot {agent['bot_id']} ({agent['name']}) - URL обновлён")
+                            except Exception as e:
+                                print(f"[INSTALL] Ошибка обновления бота {agent['bot_id']}: {e}")
+                except Exception as e:
+                    print(f"[INSTALL] Ошибка обновления ботов: {e}")
+
+            # Завершаем установку и редиректим на главную
             if request.method == 'POST':
                 return f'''
                 <html>
@@ -612,10 +617,16 @@ def install():
                 <body>
                     <script>
                         BX24.init(function() {{
-                            window.location.href = '/?DOMAIN={domain}';
+                            // КРИТИЧЕСКИ ВАЖНО: сообщаем Bitrix24 что установка завершена
+                            BX24.installFinish();
+                            console.log("installFinish called!");
+                            // Переходим на главную
+                            setTimeout(function() {{
+                                window.location.href = '/?DOMAIN={domain}';
+                            }}, 1000);
                         }});
                     </script>
-                    <p>Перенаправление...</p>
+                    <p>Установка приложения...</p>
                 </body>
                 </html>
                 '''
@@ -625,11 +636,8 @@ def install():
             print("❌ Ошибка:", str(e))
             return jsonify({'error': str(e)}), 500
 
-    # Если просто GET без токенов - редирект на главную
-    if request.method == 'GET':
-        return redirect(f'/?DOMAIN={domain}')
-
-    return jsonify({'success': True})
+    # Fallback
+    return redirect(f'/?DOMAIN={domain}')
 
 
 # === HEALTH CHECK ===
@@ -783,6 +791,106 @@ def api_bot_update_url(agent_id):
             'result': result,
             'handler_url': handler_url,
             'message': f"URL бота {agent['bot_id']} обновлён на {handler_url}"
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/agent/<int:agent_id>/chat', methods=['POST'])
+def api_agent_chat(agent_id):
+    """
+    API: Тестовый чат с агентом напрямую (без Bitrix24 webhook)
+
+    Позволяет тестировать агента прямо из интерфейса приложения
+    """
+    data = request.json
+    domain = data.get('domain')
+    message = data.get('message', '').strip()
+
+    if not domain:
+        return jsonify({'error': 'Domain required'}), 400
+
+    if not message:
+        return jsonify({'error': 'Message required'}), 400
+
+    agent = db.get_agent(agent_id)
+    if not agent or agent['domain'] != domain:
+        return jsonify({'error': 'Agent not found'}), 404
+
+    if not agent.get('openai_api_key'):
+        return jsonify({'error': 'OpenAI API key not configured'}), 400
+
+    try:
+        from openai_client import OpenAIClient
+        from datetime import datetime
+        import pytz
+
+        openai_client = OpenAIClient(agent['openai_api_key'])
+
+        # Получаем текущее время в часовом поясе агента
+        tz = pytz.timezone(agent.get('timezone', 'UTC'))
+        now = datetime.now(tz)
+
+        # Получаем RAG контекст
+        rag_context = db.get_rag_context(agent_id, max_length=4000)
+
+        # Строим системный промпт
+        system_prompt = openai_client.build_system_prompt(
+            custom_system_prompt=agent.get('system_prompt'),
+            agent_description=agent.get('description'),
+            current_time_info=now.strftime('%Y-%m-%d %H:%M:%S %Z'),
+            rag_context=rag_context
+        )
+
+        # Формируем сообщения
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message}
+        ]
+
+        # Получаем инструменты (но для тестового чата не выполняем их)
+        from tools_registry import get_enabled_tools
+        tools = get_enabled_tools(agent.get('enabled_tools', []))
+
+        # Вызываем OpenAI
+        response = openai_client.chat_completion(
+            messages=messages,
+            model=agent.get('openai_model', 'gpt-4o'),
+            temperature=agent.get('temperature', 0.7),
+            tools=tools if tools else None,
+            max_retries=agent.get('max_retries', 3)
+        )
+
+        # Получаем ответ
+        response_text = response.get('content', '')
+
+        # Если есть tool calls, показываем их
+        tool_calls_info = []
+        if response.get('tool_calls'):
+            for tc in response['tool_calls']:
+                tool_calls_info.append({
+                    'function': tc['function'],
+                    'arguments': tc['arguments']
+                })
+            if not response_text:
+                response_text = f"[Бот хочет выполнить функции: {', '.join([tc['function'] for tc in response['tool_calls']])}]"
+
+        # Логируем тестовое сообщение
+        db.add_log(agent_id, 'test_chat', {
+            'message': message,
+            'response': response_text,
+            'tool_calls': tool_calls_info,
+            'usage': response.get('usage', {})
+        })
+
+        return jsonify({
+            'success': True,
+            'response': response_text,
+            'tool_calls': tool_calls_info,
+            'usage': response.get('usage', {})
         })
 
     except Exception as e:

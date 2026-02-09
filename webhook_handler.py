@@ -22,6 +22,7 @@ def parse_bitrix_form_data(form_data):
     data[PARAMS][DIALOG_ID]=123
     data[PARAMS][MESSAGE]=Hello
     auth[domain]=xxx.bitrix24.ru
+    auth[access_token]=xxx
     """
     result = {
         'event': form_data.get('event'),
@@ -54,6 +55,31 @@ def parse_bitrix_form_data(form_data):
             continue
 
     return result
+
+
+def _create_bitrix_client(event_data):
+    """
+    Создать BitrixClient из данных события.
+
+    Bitrix24 отправляет auth[access_token] с каждым событием.
+    Используем этот токен для ответа, а также сохраняем в БД.
+    """
+    auth = event_data.get('auth', {})
+    event_access_token = auth.get('access_token')
+    event_domain = auth.get('domain') or Config.BITRIX_DOMAIN
+
+    if event_access_token:
+        # Используем токен из события (основной режим для OAuth приложений)
+        bitrix = BitrixClient(domain=event_domain, db=db, access_token=event_access_token)
+        bitrix.save_event_tokens(auth)
+    else:
+        # Fallback: пробуем OAuth из БД, потом webhook
+        try:
+            bitrix = BitrixClient(domain=event_domain, db=db)
+        except Exception:
+            bitrix = BitrixClient()
+
+    return bitrix
 
 
 # ТЕСТОВЫЙ ENDPOINT - проверка доступности
@@ -100,15 +126,14 @@ def bot_webhook():
     print("[WEBHOOK] === INCOMING REQUEST ===")
     print(f"[WEBHOOK] Method: {request.method}")
     print(f"[WEBHOOK] Content-Type: {request.content_type}")
-    print(f"[WEBHOOK] Headers: {dict(request.headers)}")
     print(f"[WEBHOOK] Args: {request.args.to_dict()}")
 
     # Логируем ВСЕ входящие данные для отладки
     form_data = request.form.to_dict()
-    print(f"[WEBHOOK] Form data: {form_data}")
+    print(f"[WEBHOOK] Form data keys: {list(form_data.keys())[:20]}")
 
     raw_data = request.get_data(as_text=True)
-    print(f"[WEBHOOK] Raw data: {raw_data[:2000] if raw_data else 'EMPTY'}")
+    print(f"[WEBHOOK] Raw data length: {len(raw_data) if raw_data else 0}")
 
     try:
         # Парсим данные от Bitrix24
@@ -124,10 +149,11 @@ def bot_webhook():
                 flat_data = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
                 event_data = parse_bitrix_form_data(flat_data)
 
-        print(f"[WEBHOOK] Parsed event data: {json.dumps(event_data, indent=2, ensure_ascii=False)[:2000]}")
-
         event_type = event_data.get('event')
+        auth_info = event_data.get('auth', {})
         print(f"[WEBHOOK] Event type: {event_type}")
+        print(f"[WEBHOOK] Auth domain: {auth_info.get('domain')}")
+        print(f"[WEBHOOK] Auth token present: {bool(auth_info.get('access_token'))}")
 
         # === СОБЫТИЯ ДЛЯ ВНУТРЕННИХ БОТОВ ===
         if event_type == 'ONIMBOTMESSAGEADD':
@@ -143,12 +169,10 @@ def bot_webhook():
 
         # === СОБЫТИЯ ДЛЯ ОТКРЫТЫХ ЛИНИЙ ===
         elif event_type == 'ONIMCONNECTORMESSAGEADD':
-            # Сообщение от клиента через коннектор (Telegram, WhatsApp и т.д.)
             print("[WEBHOOK] OpenLine connector message!")
             return handle_openline_message(event_data)
 
         elif event_type == 'ONIMOPENLINEMESSAGEADD':
-            # Сообщение в открытой линии
             print("[WEBHOOK] OpenLine message add!")
             return handle_openline_message(event_data)
 
@@ -166,7 +190,7 @@ def bot_webhook():
 
         else:
             print(f"[WEBHOOK] Unknown event type: {event_type}")
-            print(f"[WEBHOOK] Full form_data for debugging: {form_data}")
+            print(f"[WEBHOOK] Full params: {event_data.get('data', {}).get('PARAMS', {})}")
             return jsonify({'status': 'ok', 'event': event_type})
 
     except Exception as e:
@@ -177,25 +201,21 @@ def bot_webhook():
 
 
 def handle_openline_message(event_data):
-    """
-    Обработка сообщений из Открытых Линий
-    """
+    """Обработка сообщений из Открытых Линий"""
     print("\n[OPENLINE] === HANDLING OPENLINE MESSAGE ===")
 
     try:
         data = event_data.get('data', {})
         params = data.get('PARAMS', {})
 
-        # Для открытых линий структура данных может отличаться
         dialog_id = params.get('DIALOG_ID') or params.get('CHAT_ID')
         message_text = params.get('MESSAGE') or params.get('MESSAGE_TEXT')
         from_user_id = params.get('FROM_USER_ID') or params.get('USER_ID')
         chat_id = params.get('CHAT_ID')
-        connector_mid = params.get('CONNECTOR_MID')  # ID сообщения в коннекторе
-        line_id = params.get('LINE_ID')  # ID открытой линии
+        line_id = params.get('LINE_ID')
 
         auth = event_data.get('auth', {})
-        domain = auth.get('domain')
+        domain = auth.get('domain') or Config.BITRIX_DOMAIN
 
         print(f"[OPENLINE] Domain: {domain}")
         print(f"[OPENLINE] Dialog ID: {dialog_id}")
@@ -203,11 +223,6 @@ def handle_openline_message(event_data):
         print(f"[OPENLINE] Line ID: {line_id}")
         print(f"[OPENLINE] From user: {from_user_id}")
         print(f"[OPENLINE] Message: {message_text}")
-        print(f"[OPENLINE] All params: {params}")
-
-        if not domain:
-            print("[OPENLINE] ERROR: No domain!")
-            return jsonify({'status': 'no_domain'})
 
         if not message_text:
             print("[OPENLINE] ERROR: No message text!")
@@ -219,7 +234,6 @@ def handle_openline_message(event_data):
             agent = db.get_agent_by_openline(line_id, domain)
 
         if not agent:
-            # Пробуем найти любого активного агента с типом openline
             print(f"[OPENLINE] Agent not found for line_id={line_id}, trying fallback...")
             all_agents = db.get_agents(domain)
             for a in all_agents:
@@ -232,16 +246,16 @@ def handle_openline_message(event_data):
             print(f"[OPENLINE] No agent found!")
             return jsonify({'status': 'agent_not_found'})
 
-        print(f"[OPENLINE] Found agent: {agent['name']} (bot_id={agent['bot_id']})")
+        print(f"[OPENLINE] Found agent: {agent['name']} (bot_id={agent.get('bot_id')})")
 
         if not agent.get('is_active'):
             print(f"[OPENLINE] Agent is inactive")
             return jsonify({'status': 'agent_inactive'})
 
-        bitrix = BitrixClient(domain, db)
-        bot_id = agent['bot_id']
+        # Создаём Bitrix клиент из токенов события
+        bitrix = _create_bitrix_client(event_data)
 
-        # Для открытых линий используем chat_id как dialog_id
+        bot_id = agent.get('bot_id')
         target_dialog_id = f"chat{chat_id}" if chat_id and not str(chat_id).startswith('chat') else (dialog_id or chat_id)
 
         # Показываем индикатор "печатает..."
@@ -289,19 +303,18 @@ def handle_message_add(event_data):
     print("\n[MESSAGE] === HANDLING MESSAGE ===")
 
     try:
-        # Получаем параметры из распарсенных данных
         data = event_data.get('data', {})
         params = data.get('PARAMS', {})
 
         dialog_id = params.get('DIALOG_ID')
         message_text = params.get('MESSAGE')
         from_user_id = params.get('FROM_USER_ID')
-        to_bot_id = params.get('TO_USER_ID')  # Это ID бота, которому отправлено сообщение
+        to_bot_id = params.get('TO_USER_ID')
         chat_id = params.get('CHAT_ID')
         message_id = params.get('MESSAGE_ID')
 
         auth = event_data.get('auth', {})
-        domain = auth.get('domain')
+        domain = auth.get('domain') or Config.BITRIX_DOMAIN
 
         print(f"[MESSAGE] Domain: {domain}")
         print(f"[MESSAGE] Dialog ID: {dialog_id}")
@@ -310,16 +323,10 @@ def handle_message_add(event_data):
         print(f"[MESSAGE] Chat ID: {chat_id}")
         print(f"[MESSAGE] Message: {message_text}")
 
-        if not domain:
-            print("[MESSAGE] ERROR: No domain!")
-            return jsonify({'status': 'no_domain'})
-
         if not message_text:
             print("[MESSAGE] ERROR: No message text!")
             return jsonify({'status': 'no_message'})
 
-        # Ищем агента по bot_id
-        # ВАЖНО: приводим to_bot_id к int, т.к. в БД хранится как INTEGER
         bot_id_int = None
         if to_bot_id:
             try:
@@ -338,24 +345,25 @@ def handle_message_add(event_data):
             all_agents = db.get_agents(domain)
             print(f"[MESSAGE] All agents in domain: {[(a['id'], a['bot_id'], a['name']) for a in all_agents]}")
 
-            # Попробуем найти любого активного агента для этого домена
             for a in all_agents:
-                if a.get('is_active') and a.get('bot_id'):
-                    print(f"[MESSAGE] Using fallback agent: {a['name']} (bot_id={a['bot_id']})")
+                if a.get('is_active'):
+                    print(f"[MESSAGE] Using fallback agent: {a['name']} (bot_id={a.get('bot_id')})")
                     agent = a
                     break
 
             if not agent:
                 return jsonify({'status': 'agent_not_found'})
 
-        print(f"[MESSAGE] Found agent: {agent['name']} (ID={agent['id']}, bot_id={agent['bot_id']})")
+        print(f"[MESSAGE] Found agent: {agent['name']} (ID={agent['id']}, bot_id={agent.get('bot_id')})")
 
         if not agent.get('is_active'):
             print(f"[MESSAGE] Agent is inactive")
             return jsonify({'status': 'agent_inactive'})
 
-        bitrix = BitrixClient(domain, db)
-        bot_id_to_use = agent['bot_id']
+        # Создаём Bitrix клиент из токенов события
+        bitrix = _create_bitrix_client(event_data)
+
+        bot_id_to_use = agent.get('bot_id') or bot_id_int
 
         # Показываем индикатор "печатает..."
         try:

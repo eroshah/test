@@ -1,33 +1,72 @@
 # bitrix_client.py
 """
-Исправленный клиент для работы с Bitrix24 REST API
-Работа с чат-ботами происходит через WEBHOOK (события), а НЕ через polling
+Клиент для работы с Bitrix24 REST API
+
+Поддерживает 3 режима работы:
+1. OAuth (основной) — через access_token из БД, с автообновлением
+2. Event token — через access_token из входящего события Bitrix24
+3. Webhook (fallback) — через входящий вебхук URL
 
 Обновлено: 2025
-- Добавлены методы для получения списка ботов
-- Исправлено удаление ботов с открытых линий
-- Исправлено получение открытых линий
+- Dual-mode: OAuth + Webhook
+- Автообновление токенов
+- Сохранение токенов из событий
 """
-import requests
 import time
+import requests
 from config import Config
 
 
 class BitrixClient:
-    def __init__(self, domain, db):
-        self.domain = domain
-        self.db = db
-        self.base_url = f"https://{domain}/rest"
+    def __init__(self, domain=None, db=None, access_token=None):
+        """
+        Инициализация клиента Bitrix24 API.
 
-    def _get_tokens(self):
-        """Получить токены из БД"""
-        app = self.db.get_app(self.domain)
-        if not app:
-            raise Exception("Приложение не установлено")
-        return app
+        Режимы:
+          BitrixClient(domain='...', db=db)              — OAuth из БД
+          BitrixClient(domain='...', access_token='xxx')  — токен из события
+          BitrixClient()                                   — webhook fallback
+        """
+        self.domain = domain or Config.BITRIX_DOMAIN
+        self.db = db
+        self._access_token = access_token
+        self.webhook_url = Config.BITRIX_WEBHOOK_URL.rstrip('/') if Config.BITRIX_WEBHOOK_URL else None
+
+        # Определяем режим работы
+        if access_token:
+            self.mode = 'event_token'
+        elif domain and db:
+            self.mode = 'oauth'
+        elif self.webhook_url:
+            self.mode = 'webhook'
+        else:
+            raise Exception("BitrixClient: нужен (domain+db), access_token, или BITRIX_WEBHOOK_URL")
+
+        print(f"[Bitrix API] Mode: {self.mode}, Domain: {self.domain}")
+
+    def _get_access_token(self):
+        """Получить валидный access_token, обновив при необходимости"""
+        if self._access_token:
+            return self._access_token
+
+        if self.mode == 'oauth' and self.db:
+            app = self.db.get_app(self.domain)
+            if not app:
+                raise Exception(f"Приложение не установлено для домена: {self.domain}")
+
+            # Проверяем срок действия (обновляем за 60 сек до истечения)
+            if app.get('expires_at') and int(time.time()) >= int(app['expires_at']) - 60:
+                print(f"[Bitrix API] Токен истёк, обновляем...")
+                return self._refresh_token(app['refresh_token'])
+
+            return app['access_token']
+
+        raise Exception("Нет доступного access_token")
 
     def _refresh_token(self, refresh_token):
-        """Обновить access_token"""
+        """Обновить OAuth access_token через client credentials"""
+        print(f"[Bitrix API] Обновление токена для {self.domain}")
+
         response = requests.post("https://oauth.bitrix.info/oauth/token/", data={
             'grant_type': 'refresh_token',
             'client_id': Config.CLIENT_ID,
@@ -37,43 +76,67 @@ class BitrixClient:
 
         if response.status_code == 200:
             data = response.json()
+            new_access_token = data['access_token']
 
-            self.db.save_app(
-                self.domain,
-                data['access_token'],
-                data['refresh_token'],
-                int(time.time()) + data['expires_in'],
-                data.get('member_id')
-            )
+            if self.db:
+                self.db.save_app(
+                    self.domain,
+                    new_access_token,
+                    data['refresh_token'],
+                    int(time.time()) + int(data.get('expires_in', 3600)),
+                    data.get('member_id')
+                )
+                print(f"[Bitrix API] Токен обновлён и сохранён")
 
-            return data['access_token']
+            return new_access_token
         else:
-            raise Exception("Не удалось обновить токен")
+            raise Exception(f"Ошибка обновления токена: {response.status_code} - {response.text}")
+
+    def save_event_tokens(self, auth_data):
+        """
+        Сохранить токены из входящего события Bitrix24.
+
+        Bitrix24 отправляет auth[access_token], auth[refresh_token] и т.д.
+        с каждым событием. Сохраняем для дальнейшего использования.
+        """
+        if not self.db or not auth_data:
+            return
+
+        domain = auth_data.get('domain', self.domain)
+        access_token = auth_data.get('access_token')
+        refresh_token = auth_data.get('refresh_token')
+        expires_in = int(auth_data.get('expires_in', 3600))
+        member_id = auth_data.get('member_id')
+
+        if access_token and refresh_token:
+            self.db.save_app(
+                domain,
+                access_token,
+                refresh_token,
+                int(time.time()) + expires_in,
+                member_id
+            )
+            print(f"[Bitrix API] Токены из события сохранены для {domain}")
 
     def call(self, method, params=None):
         """Вызов метода Bitrix24 REST API"""
-        app = self._get_tokens()
-        access_token = app['access_token']
-
-        # Проверка срока действия токена
-        if app['expires_at'] and int(time.time()) >= app['expires_at']:
-            print(f"[Bitrix API] Токен истёк, обновляем...")
-            access_token = self._refresh_token(app['refresh_token'])
-
-        url = f"{self.base_url}/{method}"
-
         if params is None:
             params = {}
 
-        params['auth'] = access_token
+        if self.mode == 'webhook':
+            url = f"{self.webhook_url}/{method}"
+        else:
+            # OAuth или event_token режим
+            access_token = self._get_access_token()
+            url = f"https://{self.domain}/rest/{method}"
+            params['auth'] = access_token
 
-        print(f"[Bitrix API] Вызов: {method}")
-        print(f"[Bitrix API] Параметры: {params}")
+        print(f"[Bitrix API] Вызов: {method} (mode={self.mode})")
 
         response = requests.post(url, json=params)
 
         print(f"[Bitrix API] HTTP статус: {response.status_code}")
-        print(f"[Bitrix API] Ответ: {response.text[:1000]}")
+        print(f"[Bitrix API] Ответ: {response.text[:500]}")
 
         if response.status_code == 200:
             data = response.json()
@@ -81,7 +144,28 @@ class BitrixClient:
             if 'result' in data:
                 return data['result']
             elif 'error' in data:
-                raise Exception(f"Bitrix API Error: {data['error']} - {data.get('error_description', '')}")
+                error_code = data['error']
+                error_desc = data.get('error_description', '')
+
+                # Если токен невалиден — пробуем обновить и повторить
+                if error_code in ('expired_token', 'invalid_token', 'INVALID_TOKEN') and self.mode == 'oauth' and self.db:
+                    print(f"[Bitrix API] Токен невалиден, пробуем обновить...")
+                    app = self.db.get_app(self.domain)
+                    if app and app.get('refresh_token'):
+                        self._access_token = self._refresh_token(app['refresh_token'])
+                        # Повторяем запрос с новым токеном
+                        params['auth'] = self._access_token
+                        retry_response = requests.post(url, json=params)
+                        if retry_response.status_code == 200:
+                            retry_data = retry_response.json()
+                            if 'result' in retry_data:
+                                return retry_data['result']
+                            elif 'error' in retry_data:
+                                raise Exception(f"Bitrix API Error (после обновления токена): {retry_data['error']} - {retry_data.get('error_description', '')}")
+                        else:
+                            raise Exception(f"HTTP Error (после обновления токена): {retry_response.status_code}")
+
+                raise Exception(f"Bitrix API Error: {error_code} - {error_desc}")
             else:
                 return data
         else:
@@ -91,29 +175,19 @@ class BitrixClient:
     # ЧАТБОТ (imbot.*)
     # ========================================
 
-    def register_chatbot(self, bot_code, bot_name, handler_url, bot_description=None, openline=False):
+    def register_chatbot(self, bot_code, bot_name, handler_url, bot_description=None):
         """
-        Зарегистрировать чат-бота в Bitrix24
+        Зарегистрировать чат-бота для Открытых линий в Bitrix24
 
-        ВАЖНО: handler_url - это URL вашего сервера, куда Bitrix будет отправлять события!
-
-        Args:
-            bot_code: Уникальный код бота (латиницей)
-            bot_name: Отображаемое имя бота
-            handler_url: URL для получения событий (webhook)
-            bot_description: Описание бота
-            openline: Если True - бот для Открытых Линий (по умолчанию False - внутренний чатбот)
-
-        Returns:
-            int: BOT_ID
+        Создаёт бота типа "O" (OpenLine) - для работы с виджетами, Telegram, WhatsApp и т.д.
         """
         params = {
             'CODE': bot_code,
-            'TYPE': 'B',  # B = Bot (внутренний чатбот)
-            'EVENT_MESSAGE_ADD': handler_url,  # Событие: новое сообщение
-            'EVENT_WELCOME_MESSAGE': handler_url,  # Событие: приветствие
-            'EVENT_BOT_DELETE': handler_url,  # Событие: удаление бота
-            'EVENT_MESSAGE_UPDATE': handler_url,  # Событие: обновление сообщения
+            'TYPE': 'O',
+            'OPENLINE': 'Y',
+            'EVENT_MESSAGE_ADD': handler_url,
+            'EVENT_WELCOME_MESSAGE': handler_url,
+            'EVENT_BOT_DELETE': handler_url,
             'PROPERTIES': {
                 'NAME': bot_name,
                 'WORK_POSITION': bot_description or 'AI Assistant',
@@ -121,39 +195,14 @@ class BitrixClient:
             }
         }
 
-        # Для бота Открытых Линий
-        if openline:
-            params['TYPE'] = 'O'  # OpenLine bot
-            params['OPENLINE'] = 'Y'
-
-        print(f"[Bitrix] Регистрация бота: CODE={bot_code}, TYPE={params['TYPE']}, NAME={bot_name}")
+        print(f"[Bitrix] Регистрация бота для Открытых линий")
+        print(f"[Bitrix] CODE={bot_code}, NAME={bot_name}")
         print(f"[Bitrix] Handler URL: {handler_url}")
-        result = self.call('imbot.register', params)
-        print(f"[Bitrix] Бот зарегистрирован: BOT_ID={result}")
 
-        # Подписываемся на события открытых линий
-        if openline:
-            self._bind_openline_events(handler_url)
+        result = self.call('imbot.register', params)
+        print(f"[Bitrix] Бот зарегистрирован! BOT_ID={result}")
 
         return result
-
-    def _bind_openline_events(self, handler_url):
-        """Подписаться на события открытых линий"""
-        events = [
-            'ONIMBOTMESSAGEADD',
-            'ONIMJOINCHAT',
-            'ONIMBOTDELETE',
-        ]
-
-        for event in events:
-            try:
-                self.call('event.bind', {
-                    'EVENT': event,
-                    'HANDLER': handler_url
-                })
-                print(f"[Bitrix] Подписка на событие {event}: OK")
-            except Exception as e:
-                print(f"[Bitrix] Ошибка подписки на {event}: {e}")
 
     def unregister_chatbot(self, bot_id):
         """Удалить бота"""
@@ -182,12 +231,7 @@ class BitrixClient:
         })
 
     def get_bot_list(self):
-        """
-        Получить список всех зарегистрированных ботов текущего приложения
-
-        Returns:
-            list: Список ботов с их данными
-        """
+        """Получить список всех зарегистрированных ботов"""
         try:
             result = self.call('imbot.bot.list')
             return result if isinstance(result, list) else result if isinstance(result, dict) else []
@@ -196,15 +240,7 @@ class BitrixClient:
             return []
 
     def get_bot_info(self, bot_id):
-        """
-        Получить подробную информацию о боте
-
-        Args:
-            bot_id: ID бота
-
-        Returns:
-            dict: Информация о боте
-        """
+        """Получить информацию о боте"""
         try:
             result = self.call('imbot.bot.list', {'BOT_ID': bot_id})
             return result
@@ -213,13 +249,7 @@ class BitrixClient:
             return None
 
     def update_bot(self, bot_id, handler_url):
-        """
-        Обновить обработчик событий бота
-
-        Args:
-            bot_id: ID бота
-            handler_url: Новый URL обработчика
-        """
+        """Обновить обработчик событий бота"""
         return self.call('imbot.update', {
             'BOT_ID': bot_id,
             'FIELDS': {
@@ -231,16 +261,7 @@ class BitrixClient:
         })
 
     def bot_send_message(self, bot_id, dialog_id, message, keyboard=None, attach=None):
-        """
-        Отправить сообщение от имени бота
-
-        Args:
-            bot_id: ID бота
-            dialog_id: ID диалога (USER_ID или chatXX)
-            message: Текст сообщения
-            keyboard: Клавиатура (опционально)
-            attach: Вложение (опционально)
-        """
+        """Отправить сообщение от имени бота"""
         params = {
             'BOT_ID': bot_id,
             'DIALOG_ID': dialog_id,
@@ -270,7 +291,7 @@ class BitrixClient:
         })
 
     def bot_typing_start(self, bot_id, dialog_id):
-        """Показать индикатор "печатает..." """
+        """Показать индикатор 'печатает...'"""
         return self.call('imbot.chat.sendTyping', {
             'BOT_ID': bot_id,
             'DIALOG_ID': dialog_id
@@ -281,21 +302,12 @@ class BitrixClient:
     # ========================================
 
     def openlines_get_config_list(self):
-        """
-        Получить список всех открытых линий
-
-        Returns:
-            list: Список открытых линий с полной информацией
-        """
+        """Получить список всех открытых линий"""
         try:
-            # Метод imopenlines.config.list.get возвращает список конфигураций
             result = self.call('imopenlines.config.list.get')
-
-            # Результат может быть списком или словарем
             if isinstance(result, list):
                 return result
             elif isinstance(result, dict):
-                # Иногда Bitrix возвращает словарь с ключами
                 return list(result.values()) if result else []
             return []
         except Exception as e:
@@ -303,15 +315,7 @@ class BitrixClient:
             return []
 
     def openlines_get_config(self, config_id):
-        """
-        Получить информацию о конкретной открытой линии
-
-        Args:
-            config_id: ID конфигурации открытой линии
-
-        Returns:
-            dict: Данные открытой линии
-        """
+        """Получить информацию о конкретной открытой линии"""
         try:
             result = self.call('imopenlines.config.get', {
                 'CONFIG_ID': config_id
@@ -322,38 +326,26 @@ class BitrixClient:
             return None
 
     def openlines_attach_bot(self, openline_id, bot_id):
-        """
-        Привязать бота к открытой линии
-
-        Args:
-            openline_id: ID открытой линии
-            bot_id: ID бота
-        """
-        # Включаем бота И активируем его как приветственного бота
+        """Привязать бота к открытой линии"""
         result = self.call('imopenlines.config.update', {
             'CONFIG_ID': openline_id,
             'FIELDS': {
-                'WELCOME_BOT_ENABLE': 'Y',  # Включить приветственного бота
-                'WELCOME_BOT_ID': bot_id,    # ID бота для приветствия
-                'WELCOME_BOT_JOIN': 'first', # Подключать при первом сообщении
-                'WELCOME_BOT_LEFT': 'queue',  # После работы бота - в очередь операторов
-                'BOT_ID': bot_id              # Основной бот линии
+                'WELCOME_BOT_ENABLE': 'Y',
+                'WELCOME_BOT_ID': bot_id,
+                'WELCOME_BOT_JOIN': 'first',
+                'WELCOME_BOT_LEFT': 'queue',
+                'BOT_ID': bot_id
             }
         })
         print(f"[Bitrix] Бот {bot_id} привязан к линии {openline_id} как приветственный бот")
         return result
 
     def openlines_detach_bot(self, openline_id):
-        """
-        Отвязать бота от открытой линии
-
-        Args:
-            openline_id: ID открытой линии
-        """
+        """Отвязать бота от открытой линии"""
         return self.call('imopenlines.config.update', {
             'CONFIG_ID': openline_id,
             'FIELDS': {
-                'BOT_ID': 0  # 0 означает отсутствие бота
+                'BOT_ID': 0
             }
         })
 
@@ -370,13 +362,7 @@ class BitrixClient:
         })
 
     def openlines_operator_transfer(self, chat_id, transfer_id):
-        """
-        Передать диалог другому оператору
-
-        Args:
-            chat_id: ID чата
-            transfer_id: ID пользователя или очереди
-        """
+        """Передать диалог другому оператору"""
         return self.call('imopenlines.operator.transfer', {
             'CHAT_ID': chat_id,
             'TRANSFER_ID': transfer_id
@@ -393,13 +379,7 @@ class BitrixClient:
     # ========================================
 
     def im_send_message(self, dialog_id, message):
-        """
-        Отправить сообщение (от имени текущего пользователя, НЕ бота)
-
-        Args:
-            dialog_id: USER_ID или chatXX
-            message: Текст
-        """
+        """Отправить сообщение (от имени текущего пользователя, НЕ бота)"""
         return self.call('im.message.add', {
             'DIALOG_ID': dialog_id,
             'MESSAGE': message

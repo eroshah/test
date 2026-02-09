@@ -3,21 +3,34 @@
 Configuration for AI Agents Manager
 
 Updated: 2025
-- Added new OpenAI models
-- Added RAG settings
+- Webhook режим для работы с Bitrix24
+- Автоматическое создание ботов для Открытых линий
 """
 import os
 
 
 class Config:
-    # Bitrix24 App credentials
+    # ========================================
+    # BITRIX24 НАСТРОЙКИ (ЛОКАЛЬНОЕ ПРИЛОЖЕНИЕ)
+    # ========================================
+
+    # OAuth данные локального приложения
+    # Получите в Bitrix24: Разработчикам -> Другое -> Локальное приложение
     CLIENT_ID = os.environ.get('BITRIX_CLIENT_ID', 'local.697c6cefcb4d06.94919258')
     CLIENT_SECRET = os.environ.get('BITRIX_CLIENT_SECRET', 'ZWKavhd6p5hB030JnwSMcb5KvvDT29Lc4ZfWvdzrE1JTSZhGOG')
 
-    # Публичный URL приложения (URL вашего Cloudflare туннеля)
-    # ВАЖНО: Укажите здесь URL вашего туннеля без слеша в конце!
-    # Например: 'https://your-tunnel-name.trycloudflare.com'
-    PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://chemistry-preserve-preview-diana.trycloudflare.com')
+    # Домен Bitrix24 (без https://)
+    BITRIX_DOMAIN = os.environ.get('BITRIX_DOMAIN', 'view.b2bcrm.am')
+
+    # Вебхук URL (fallback для тестирования, необязателен при OAuth)
+    BITRIX_WEBHOOK_URL = os.environ.get('BITRIX_WEBHOOK_URL', '')
+
+    # ========================================
+    # ПУБЛИЧНЫЙ URL (CLOUDFLARE TUNNEL)
+    # ========================================
+    # URL вашего Cloudflare туннеля (без слеша в конце!)
+    # Этот URL будет использоваться как обработчик событий бота
+    PUBLIC_URL = os.environ.get('PUBLIC_URL', 'https://task-indiana-marked-approve.trycloudflare.com')
 
     # Database
     DATABASE = os.environ.get('DATABASE_PATH', 'ai_agents.db')
